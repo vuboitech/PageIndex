@@ -9,6 +9,14 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
+# Semaphore to limit concurrent API calls (prevents rate limiting on slower endpoints)
+_API_SEMAPHORE = asyncio.Semaphore(5)
+
+async def _rate_limited(coro):
+    """Wrap a coroutine with a semaphore to limit concurrent API calls."""
+    async with _API_SEMAPHORE:
+        return await coro
+
 ################### check title in page #########################################################
 async def check_title_appearance(item, page_list, start_index=1, model=None):    
     title=item['title']
@@ -86,7 +94,7 @@ async def check_title_appearance_in_start_concurrent(structure, page_list, model
     for item in structure:
         if item.get('physical_index') is not None:
             page_text = page_list[item['physical_index'] - 1][0]
-            tasks.append(check_title_appearance_in_start(item['title'], page_text, model=model, logger=logger))
+            tasks.append(_rate_limited(check_title_appearance_in_start(item['title'], page_text, model=model, logger=logger)))
             valid_items.append(item)
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -522,10 +530,10 @@ def generate_toc_continue(toc_content, part, model=None):
     For the title, you need to extract the original title from the text, only fix the space inconsistency.
 
     The provided text contains tags like <physical_index_X> and <physical_index_X> to indicate the start and end of page X. \
-    
+
     For the physical_index, you need to extract the physical index of the start of the section from the text. Keep the <physical_index_X> format.
 
-    The response should be in the following format. 
+    The response should be in the following format.
         [
             {
                 "structure": <structure index, "x.x.x"> (string),
@@ -533,15 +541,22 @@ def generate_toc_continue(toc_content, part, model=None):
                 "physical_index": "<physical_index_X> (keep the format)"
             },
             ...
-        ]    
+        ]
 
     Directly return the additional part of the final JSON structure. Do not output anything else."""
 
-    prompt = prompt + '\nGiven text\n:' + part + '\nPrevious tree structure\n:' + json.dumps(toc_content, indent=2)
+    # Only pass the last 20 items of the previous TOC for context to avoid exceeding token limits
+    toc_context = toc_content[-20:] if len(toc_content) > 20 else toc_content
+    prompt = prompt + '\nGiven text\n:' + part + '\nPrevious tree structure\n:' + json.dumps(toc_context, indent=2)
     response, finish_reason = llm_completion(model=model, prompt=prompt, return_finish_reason=True)
     if finish_reason == 'finished':
         return extract_json(response)
     else:
+        # Try to extract partial JSON even on max_output_reached
+        partial = extract_json(response)
+        if partial and isinstance(partial, list) and len(partial) > 0:
+            print(f'Warning: {finish_reason}, using partial result ({len(partial)} items)')
+            return partial
         raise Exception(f'finish reason: {finish_reason}')
     
 ### add verify completeness
@@ -840,9 +855,9 @@ async def fix_incorrect_toc(toc_with_page_number, page_list, incorrect_results, 
             'is_valid': check_result['answer'] == 'yes'
         }
 
-    # Process incorrect items concurrently
+    # Process incorrect items concurrently with rate limiting
     tasks = [
-        process_and_check_item(item)
+        _rate_limited(process_and_check_item(item))
         for item in incorrect_results
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -935,9 +950,9 @@ async def verify_toc(page_list, list_result, start_index=1, N=None, model=None):
             item_with_index['list_index'] = idx  # Add the original index in list_result
             indexed_sample_list.append(item_with_index)
 
-    # Run checks concurrently
+    # Run checks concurrently with rate limiting
     tasks = [
-        check_title_appearance(item, page_list, start_index, model)
+        _rate_limited(check_title_appearance(item, page_list, start_index, model))
         for item in indexed_sample_list
     ]
     results = await asyncio.gather(*tasks)
