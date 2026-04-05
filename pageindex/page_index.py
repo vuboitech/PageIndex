@@ -9,11 +9,16 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-# Semaphore to limit concurrent API calls (prevents rate limiting on slower endpoints)
-_API_SEMAPHORE = asyncio.Semaphore(5)
+# Optional concurrency limit for async LLM calls. Default 0 = unlimited (original behavior).
+# Set PAGEINDEX_MAX_CONCURRENCY env var to a positive integer to enable rate limiting
+# (useful for endpoints with tight rate limits).
+_MAX_CONCURRENCY = int(os.getenv("PAGEINDEX_MAX_CONCURRENCY", "0"))
+_API_SEMAPHORE = asyncio.Semaphore(_MAX_CONCURRENCY) if _MAX_CONCURRENCY > 0 else None
 
 async def _rate_limited(coro):
-    """Wrap a coroutine with a semaphore to limit concurrent API calls."""
+    """Wrap a coroutine with a semaphore to limit concurrent API calls (no-op when disabled)."""
+    if _API_SEMAPHORE is None:
+        return await coro
     async with _API_SEMAPHORE:
         return await coro
 
