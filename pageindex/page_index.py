@@ -382,7 +382,11 @@ def extract_matching_page_pairs(toc_page, toc_physical_index, start_page_index):
         for page_item in toc_page:
             if phy_item.get('title') == page_item.get('title'):
                 physical_index = phy_item.get('physical_index')
-                if physical_index is not None and int(physical_index) >= start_page_index:
+                try:
+                    physical_index_int = int(physical_index)
+                except (TypeError, ValueError):
+                    continue
+                if physical_index_int >= start_page_index:
                     pairs.append({
                         'title': phy_item.get('title'),
                         'page': page_item.get('page'),
@@ -414,6 +418,8 @@ def calculate_page_offset(pairs):
     return most_common
 
 def add_page_offset_to_toc_json(data, offset):
+    if offset is None:
+        offset = 0
     for i in range(len(data)):
         if data[i].get('page') is not None and isinstance(data[i]['page'], int):
             data[i]['physical_index'] = data[i]['page'] + offset
